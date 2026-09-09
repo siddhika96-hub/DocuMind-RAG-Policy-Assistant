@@ -1,404 +1,159 @@
-# DocuMind — RAG Policy & Knowledge Assistant
+# DocuMind — Intelligent Policy & Knowledge Assistant
 
-An intelligent **Retrieval-Augmented Generation (RAG)** system that allows users to upload documents or ingest web pages, ask natural-language questions, and receive **grounded answers with source citations**.
+A Retrieval-Augmented Generation (RAG) system that lets users upload documents (PDF, DOCX, TXT) or ingest web pages, then ask natural-language questions and receive accurate, cited answers grounded strictly in the source content — with no hallucinated information.
 
-The system is designed to minimize hallucinations by generating answers strictly from retrieved source content and declining questions that cannot be answered from the available knowledge base.
+## Features
 
----
+- **Multi-format ingestion** — PDF, DOCX, TXT, and live web page URLs
+- **Background ingestion** — document uploads respond immediately; parsing, chunking, and embedding run asynchronously via FastAPI `BackgroundTasks`, so large uploads don't block the API
+- **Hybrid retrieval** — combines dense semantic search (embeddings + cosine similarity via pgvector) with keyword-based full-text search (PostgreSQL), merged via weighted score fusion
+- **Cross-encoder reranking** — refines hybrid search candidates using a query-passage cross-encoder for sharper relevance ranking
+- **Per-document scoping** — retrieval can be scoped to a single document, preventing accuracy loss from unrelated documents competing in the same search
+- **Grounded generation with an empty-context guard** — explicit hallucination-prevention prompting; verified to correctly decline out-of-scope questions. The LLM is never called when retrieval returns zero results, preventing a hallucination edge case found during testing
+- **Prompt injection mitigation** — a hardened system prompt establishes retrieved content as data, not instructions, and an ingestion-time keyword scanner flags documents containing common injection patterns. Tested against a live, deliberately crafted injection attempt
+- **API key authentication** — all endpoints require a valid `X-API-Key` header
+- **Source citations** — every answer traces back to the originating document and page (where applicable)
+- **Persistent conversation history** — session-based multi-turn chat, stored and retrievable
+- **Document management** — upload, list, and delete documents via REST API, with cascading cleanup of associated chunks
+- **Streamlit chat interface** — full working frontend, not just an API
 
-## ✨ Features
+## Architecture
 
-* **Multi-format ingestion** — PDF, DOCX, TXT, and web pages
-* **Hybrid retrieval** — combines semantic vector search with PostgreSQL full-text search
-* **Cross-encoder reranking** — improves relevance of retrieved passages
-* **Grounded generation** — prompts the LLM to answer only from retrieved context
-* **Source citations** — answers include the originating document and page where applicable
-* **Conversation history** — supports persistent session-based multi-turn conversations
-* **Document management** — upload, list, and delete documents through REST APIs
-* **Streamlit interface** — complete working chat frontend
-* **Retrieval evaluation** — measures retrieval performance using Recall@K
-
----
-
-## 🧠 RAG Architecture
-
-### Ingestion Pipeline
-
-```text
-Document / Web URL
-        ↓
-Parse & Clean Text
-        ↓
-Recursive Chunking
-        ↓
-Generate Embeddings
-        ↓
-PostgreSQL + pgvector
+**Ingestion pipeline:**
+```
+Document (PDF/DOCX/TXT) or URL
+    → Upload endpoint creates Document record (status: processing), responds immediately
+    → [Background task] Parse & clean text → scan for injection patterns
+    → Chunk (recursive splitting with overlap)
+    → Embed (Sentence-Transformers)
+    → Store in PostgreSQL + pgvector → status: ready
 ```
 
-Supported sources:
-
-```text
-PDF ──────┐
-DOCX ─────┤
-TXT ──────┼──→ Text Extraction → Chunking → Embeddings → Database
-Web URL ──┘
+**Query pipeline:**
+```
+User question (+ API key, optional document_id)
+    → Verify API key
+    → Embed query
+    → Dense search (pgvector) + Keyword search (PostgreSQL full-text), optionally scoped to one document
+    → Merge via weighted fusion (hybrid search)
+    → Cross-encoder reranking
+    → If zero results: return "no information found" — LLM is never called
+    → Otherwise: construct grounded, injection-resistant prompt with citations
+    → LLM generation (Hugging Face Inference API)
+    → Answer + sources, persisted to conversation history
 ```
 
-### Query Pipeline
+## Tech Stack
 
-```text
-User Question
-      ↓
-Query Embedding
-      ↓
- ┌───────────────────────┐
- │                       │
- ▼                       ▼
-Dense Search       Keyword Search
-(pgvector)        (PostgreSQL FTS)
- │                       │
- └──────────┬────────────┘
-            ↓
-      Weighted Fusion
-      (Hybrid Search)
-            ↓
-   Cross-Encoder Reranking
-            ↓
-   Grounded Prompt + Sources
-            ↓
-     Hugging Face LLM
-            ↓
-     Answer + Citations
-            ↓
-   Conversation History
+| Layer | Technology |
+|---|---|
+| Backend API | FastAPI, SQLAlchemy |
+| Database | PostgreSQL + pgvector (hosted on Supabase) |
+| Embeddings | Sentence-Transformers (`all-MiniLM-L6-v2`, 384-dim) |
+| Reranking | Cross-Encoder (`cross-encoder/ms-marco-MiniLM-L-6-v2`) |
+| LLM | Hugging Face Inference API |
+| Frontend | Streamlit |
+| Document parsing | pypdf, python-docx, BeautifulSoup |
+| Auth | API key via custom FastAPI dependency |
+
+## Project Structure
+
 ```
-
-### Retrieval Strategy
-
-The system combines:
-
-**1. Dense Semantic Search**
-
-Uses Sentence-Transformers embeddings and pgvector cosine similarity to retrieve semantically similar chunks.
-
-**2. Keyword Search**
-
-Uses PostgreSQL full-text search to capture exact keyword and terminology matches.
-
-**3. Hybrid Search**
-
-Dense and keyword results are merged using weighted score fusion.
-
-Default weighting:
-
-```text
-Dense retrieval   → 0.7
-Keyword retrieval → 0.3
-```
-
-**4. Cross-Encoder Reranking**
-
-The retrieved candidates are passed through a cross-encoder to produce a more accurate relevance ranking before generation.
-
----
-
-## 🛠️ Tech Stack
-
-| Component        | Technology                             |
-| ---------------- | -------------------------------------- |
-| Backend          | FastAPI                                |
-| ORM              | SQLAlchemy                             |
-| Database         | PostgreSQL + pgvector                  |
-| Database Hosting | Supabase                               |
-| Embeddings       | Sentence-Transformers                  |
-| Embedding Model  | `all-MiniLM-L6-v2`                     |
-| Reranker         | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
-| LLM              | Hugging Face Inference API             |
-| Frontend         | Streamlit                              |
-| PDF Parsing      | pypdf                                  |
-| DOCX Parsing     | python-docx                            |
-| Web Parsing      | BeautifulSoup                          |
-| Evaluation       | Recall@K                               |
-
----
-
-## 📁 Project Structure
-
-```text
 policy-assistant/
-│
 ├── app/
-│   ├── main.py
-│   ├── database.py
-│   ├── models.py
-│   │
+│   ├── main.py               # FastAPI app entrypoint
+│   ├── database.py            # DB connection / session management
+│   ├── models.py               # SQLAlchemy models (Document, Chunk, Message)
+│   ├── auth.py                  # API key verification dependency
 │   ├── ingestion/
-│   │   ├── parser.py
-│   │   └── chunker.py
-│   │
+│   │   ├── parser.py            # PDF/DOCX/TXT/URL text extraction, cleaning, injection scanning
+│   │   ├── chunker.py            # Recursive text splitting with overlap
+│   │   └── pipeline.py            # Ingestion orchestration, incl. background processing
 │   ├── retrieval/
-│   │   ├── embeddings.py
-│   │   └── search.py
-│   │
+│   │   ├── embeddings.py          # Embedding model + cross-encoder reranker
+│   │   └── search.py               # Dense, keyword, and hybrid search (with document scoping)
 │   ├── generation/
-│   │   ├── prompts.py
-│   │   └── llm.py
-│   │
+│   │   ├── prompts.py               # Grounded, injection-resistant prompt construction
+│   │   └── llm.py                    # LLM API calls
 │   └── routers/
-│       ├── documents.py
-│       └── chat.py
-│
-├── tests/
-│   └── Pipeline verification scripts
-│
-├── create_tables.py
-├── evaluate.py
-├── frontend.py
-├── HF_models.py
+│       ├── documents.py               # Upload/list/delete endpoints (API key protected)
+│       └── chat.py                     # Ask/history endpoints (API key protected)
+├── tests/                     # Manual verification scripts per pipeline stage
+├── evaluate.py                 # Retrieval evaluation (Recall@K)
+├── check_models.py              # Utility: lists live HF models for your token
+├── create_tables.py              # One-time DB table creation
+├── frontend.py                    # Streamlit chat UI
 ├── requirements.txt
-├── README.md
-└── .gitignore
+└── .env                            # Secrets (gitignored): DATABASE_URL, HF_TOKEN, API_SECRET_KEY
 ```
 
-### Key Components
+## Evaluation
 
-| File            | Purpose                                     |
-| --------------- | ------------------------------------------- |
-| `main.py`       | FastAPI application entry point             |
-| `parser.py`     | PDF, DOCX, TXT, and URL text extraction     |
-| `chunker.py`    | Recursive text splitting with overlap       |
-| `embeddings.py` | Embedding generation and reranking          |
-| `search.py`     | Dense, keyword, and hybrid retrieval        |
-| `prompts.py`    | Grounded prompt construction                |
-| `llm.py`        | Hugging Face LLM integration                |
-| `documents.py`  | Document management APIs                    |
-| `chat.py`       | Question answering and conversation history |
-| `frontend.py`   | Streamlit chat interface                    |
-| `evaluate.py`   | Retrieval evaluation using Recall@K         |
+Retrieval quality is measured using Recall@K on a hand-built test set of representative questions with known-correct answers verified against source documents.
 
----
+Run: `python evaluate.py`
 
-## 📊 Evaluation
+**Note on scope:** the test set is intentionally small and self-authored. It's sufficient to validate that the retrieval pipeline works correctly end-to-end, but is not a substitute for a larger, independently-labeled evaluation set. During development, this process also surfaced a real methodology bug — an early version of the eval checked for paraphrased "ideal answers" rather than actual source-document phrases, producing a misleading recall score. Fixing the evaluation itself (not the retrieval system) resolved it.
 
-Retrieval quality is evaluated using **Recall@K** on a manually created test set containing representative questions with known relevant source content.
+## Security
 
-Run the evaluation with:
+- **Authentication:** all endpoints require an `X-API-Key` header matching a server-side secret. Requests without a valid key receive `401 Unauthorized`.
+- **SQL injection:** all database queries use parameterized SQL (SQLAlchemy `text()` with named bind parameters), never string concatenation of user input.
+- **Prompt injection:** mitigated via (1) a system prompt that explicitly treats retrieved content as data, never as instructions, and (2) a keyword-based scanner that flags documents containing common injection phrases during ingestion. Tested with a deliberately crafted injection document — the system correctly ignored embedded instructions and answered only from legitimate content. This is a mitigation, not a complete solution; prompt injection remains an open problem in the field, and a more robust system would use a dedicated classifier rather than keyword matching.
+- **Secrets management:** all credentials (`DATABASE_URL`, `HF_TOKEN`, `API_SECRET_KEY`) are loaded from environment variables, never hardcoded, never committed to version control.
+
+## Setup
 
 ```bash
-python evaluate.py
-```
+# 1. Clone and enter the project
+git clone <your-repo-url>
+cd policy-assistant
 
-### Evaluation Methodology
-
-The evaluation dataset is intentionally small and self-authored. It is designed to validate that the retrieval pipeline works correctly end-to-end rather than make broad quantitative claims about production-scale performance.
-
-During development, an evaluation methodology issue was discovered where the initial implementation compared retrieved content against **paraphrased ideal answers instead of actual source-document content**.
-
-This produced misleading retrieval results.
-
-The evaluation was corrected to verify retrieved chunks against the actual source content, and reported failures were manually inspected rather than relying solely on aggregate Recall@K scores.
-
-This helped validate the evaluation methodology itself before using it to judge retrieval quality.
-
----
-
-## 🚀 Getting Started
-
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/siddhika96-hub/DocuMind-RAG-Policy-Assistant.git
-cd DocuMind-RAG-Policy-Assistant
-```
-
-### 2. Create a Virtual Environment
-
-**Windows:**
-
-```bash
+# 2. Create and activate a virtual environment
 python -m venv venv
-venv\Scripts\activate
-```
+venv\Scripts\Activate.ps1      # Windows
+source venv/bin/activate        # Mac/Linux
 
-**Mac/Linux:**
-
-```bash
-python -m venv venv
-source venv/bin/activate
-```
-
-### 3. Install Dependencies
-
-```bash
+# 3. Install dependencies
 pip install -r requirements.txt
-```
 
-### 4. Configure Environment Variables
+# 4. Set up environment variables
+# Create a .env file with:
+#   DATABASE_URL=postgresql://...  (Supabase or any pgvector-enabled Postgres)
+#   HF_TOKEN=hf_...                (free at huggingface.co/settings/tokens)
+#   API_SECRET_KEY=...             (generate with: python -c "import secrets; print(secrets.token_urlsafe(32))")
 
-Create a `.env` file in the project root:
-
-```env
-DATABASE_URL=postgresql://...
-HF_TOKEN=hf_...
-```
-
-> Never commit your `.env` file. It contains private credentials.
-
-### 5. Create Database Tables
-
-```bash
+# 5. Create database tables
 python create_tables.py
-```
 
-### 6. Start the FastAPI Backend
-
-```bash
+# 6. Run the backend
 uvicorn app.main:app --reload
-```
 
-The API will be available at:
-
-```text
-http://127.0.0.1:8000
-```
-
-Interactive API documentation:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-### 7. Start the Streamlit Frontend
-
-Open another terminal:
-
-```bash
+# 7. In a separate terminal, run the frontend
 streamlit run frontend.py
 ```
 
-Open:
+Visit `http://localhost:8501` for the chat interface, or `http://127.0.0.1:8000/docs` for the interactive API documentation (use the "Authorize" button to enter your API key).
 
-```text
-http://localhost:8501
-```
+## Known Limitations & Future Work
 
----
+Being upfront about these — they're deliberate scope decisions for an MVP, not oversights:
 
-## 💬 Example Workflow
+- **Chunking is length-based, not structure-aware.** It can occasionally merge the end of one document section with the start of an unrelated one, diluting that chunk's embedding. Reranking mitigates but doesn't fully solve this.
+- **No table extraction.** Tables inside PDFs are extracted as plain text, which can lose structure.
+- **No OCR support.** Scanned/image-based PDFs are not supported — only PDFs with a real text layer.
+- **LLM provider dependency is a real fragility.** Hugging Face's free-tier model routing changes over time — a model that works today may stop being available later (encountered directly during development, twice). A production system would use a paid, SLA-backed provider or self-hosted model.
+- **Authentication is a single shared API key, not per-user accounts.** Sufficient to prevent anonymous public access, but not suitable for multi-tenant use with per-user permissions.
+- **Prompt injection defenses are mitigations, not guarantees.** The keyword-based scanner can be bypassed by rephrasing; the hardened system prompt is the more robust layer but is not a formal guarantee against all injection techniques.
+- **Hybrid search fusion weights (0.7 dense / 0.3 keyword) are hand-picked defaults**, not tuned or learned from data.
+- **Evaluation set is small.** Sufficient to validate correctness, insufficient to make strong quantitative claims about retrieval quality at scale.
 
-```text
-1. Upload a company policy PDF
-             ↓
-2. Document is parsed and chunked
-             ↓
-3. Chunks are embedded and stored
-             ↓
-4. Ask a question
-             ↓
-5. Hybrid retrieval finds relevant chunks
-             ↓
-6. Cross-encoder reranks the results
-             ↓
-7. LLM receives only retrieved context
-             ↓
-8. Grounded answer + source citation
-```
+## What I'd Improve With More Time
 
-Example:
-
-**Question**
-
-> Can employees use AI tools for business activities?
-
-**Response**
-
-The assistant generates an answer based on the uploaded policy and provides the relevant source citation.
-
-If the knowledge base does not contain enough information to answer a question, the system is instructed to **decline instead of fabricating an answer**.
-
----
-
-## ⚠️ Known Limitations
-
-### Per-document retrieval
-
-Queries currently search across all ingested documents. When multiple unrelated documents are present, irrelevant chunks can compete with relevant ones.
-
-**Future improvement:** metadata-based document filtering and per-document retrieval.
-
-### Structure-aware chunking
-
-Chunking is currently length-based. It does not explicitly understand document headings or section boundaries.
-
-**Future improvement:** heading-aware and structure-aware chunking.
-
-### PDF Tables
-
-Tables are currently extracted as plain text, which can result in loss of their original structure.
-
-**Future improvement:** table-aware extraction using tools such as `pdfplumber`.
-
-### OCR
-
-Scanned or image-based PDFs are not currently supported because they do not contain a machine-readable text layer.
-
-**Future improvement:** OCR integration.
-
-### LLM Provider Dependency
-
-The project uses the Hugging Face Inference API. Free-tier model availability and routing can change over time.
-
-**Future improvement:** support for configurable LLM providers or self-hosted models.
-
-### Authentication
-
-Authentication and authorization are not currently implemented.
-
-**Future improvement:** user authentication, document ownership, and multi-tenant isolation.
-
-### Retrieval Weights
-
-The hybrid retrieval weights (`0.7` dense / `0.3` keyword) are manually selected and have not been optimized against a large labeled dataset.
-
-### Evaluation Dataset
-
-The current evaluation set is small and self-authored.
-
-It is useful for validating the retrieval pipeline but is not sufficient for making strong claims about large-scale retrieval performance.
-
----
-
-## 🔮 Future Improvements
-
-* [ ] Per-document and metadata-scoped retrieval
-* [ ] Structure-aware chunking
-* [ ] Larger and independently labeled evaluation dataset
-* [ ] Generation evaluation using faithfulness and answer relevance metrics
-* [ ] Table-aware PDF extraction
-* [ ] OCR support for scanned documents
-* [ ] Authentication and multi-tenant document isolation
-* [ ] Automated CI test suite
-* [ ] Dockerization
-* [ ] Cloud deployment
-
----
-
-## 🎯 Project Highlights
-
-This project demonstrates practical implementation of a production-oriented RAG pipeline, including:
-
-* Document ingestion and preprocessing
-* Recursive text chunking
-* Vector embeddings
-* PostgreSQL + pgvector
-* Hybrid retrieval
-* Cross-encoder reranking
-* Grounded LLM generation
-* Source attribution
-* Conversation memory
-* REST API development with FastAPI
-* RAG evaluation using Recall@K
-* Debugging and validation of evaluation methodology
-
-
+- Structure-aware chunking using document headings as hard chunk boundaries
+- A dedicated classifier for prompt injection detection, rather than keyword matching
+- Per-user authentication and multi-tenant document isolation
+- Larger, more rigorous evaluation set with generation-quality metrics (faithfulness, answer relevance)
+- Table-aware PDF extraction (`pdfplumber`) for structured data like leave-day tables
+- Dockerization and containerized deployment
+- Automated CI test suite

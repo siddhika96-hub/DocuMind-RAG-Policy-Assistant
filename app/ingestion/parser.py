@@ -53,3 +53,23 @@ def extract_url_pages(url: str) -> list[dict]:
     cleaned = clean_text(raw_text)
 
     return [{"text": cleaned, "page_number": None}]
+
+SUSPICIOUS_PATTERNS = [
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "system override",
+    "you are now",
+    "disregard the above",
+    "new instructions:",
+    "reveal your system prompt",
+    "reveal your instructions",
+]
+
+
+def flag_suspicious_content(text: str) -> list[str]:
+    """Returns a list of suspicious phrases found, if any. Doesn't block ingestion —
+    just flags it for awareness, since false positives (legitimate documents that
+    happen to mention these phrases) are possible and blocking outright is too aggressive."""
+    text_lower = text.lower()
+    found = [phrase for phrase in SUSPICIOUS_PATTERNS if phrase in text_lower]
+    return found

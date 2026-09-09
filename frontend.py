@@ -1,6 +1,12 @@
 import streamlit as st
 import requests
 import mimetypes
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+API_KEY = os.getenv("API_SECRET_KEY", "")
+HEADERS = {"X-API-Key": API_KEY}
 
 API_URL = "http://127.0.0.1:8000"
 
@@ -23,7 +29,7 @@ with st.sidebar:
             with st.spinner("Processing document..."):
                 mime_type, _ = mimetypes.guess_type(uploaded_file.name)
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue(), mime_type or "application/octet-stream")}
-                response = requests.post(f"{API_URL}/documents/upload", files=files)
+                response = requests.post(f"{API_URL}/documents/upload", files=files, headers=HEADERS)
                 if response.status_code == 200:
                     st.success(f"Uploaded: {response.json()['filename']}")
                 else:
@@ -34,7 +40,7 @@ with st.sidebar:
     if url_input:
         if st.button("Ingest URL"):
             with st.spinner("Fetching and processing webpage..."):
-                response = requests.post(f"{API_URL}/documents/upload-url", json={"url": url_input})
+                response = requests.post(f"{API_URL}/documents/upload-url", json={"url": url_input},headers=HEADERS)
                 if response.status_code == 200:
                     st.success(f"Added: {response.json()['filename']}")
                 else:
@@ -43,7 +49,7 @@ with st.sidebar:
     if st.button("Refresh document list"):
         st.rerun()
 
-    docs_response = requests.get(f"{API_URL}/documents/")
+    docs_response = requests.get(f"{API_URL}/documents/",headers=HEADERS)
     if docs_response.status_code == 200:
         documents = docs_response.json()
         for doc in documents:
@@ -52,7 +58,7 @@ with st.sidebar:
                 st.write(f"📄 {doc['filename']} ({doc['status']})")
             with col2:
                 if st.button("🗑️", key=f"delete_{doc['document_id']}"):
-                    requests.delete(f"{API_URL}/documents/{doc['document_id']}")
+                    requests.delete(f"{API_URL}/documents/{doc['document_id']}",headers=HEADERS)
                     st.rerun()
 
 
@@ -78,7 +84,7 @@ if question:
                 "top_k": 3,
                 "session_id": st.session_state.session_id,
             }
-            response = requests.post(f"{API_URL}/chat/ask", json=payload)
+            response = requests.post(f"{API_URL}/chat/ask", json=payload,headers=HEADERS)
 
             if response.status_code == 200:
                 data = response.json()
